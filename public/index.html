@@ -248,6 +248,23 @@
         }
       });
 
+      // Send CSI u extended key sequences for modifier combos
+      // that browsers don't natively pass through.
+      // Format: ESC [ keycode ; modifier u
+      // Modifiers: 2=Shift, 3=Alt, 5=Ctrl, 7=Ctrl+Alt, 8=Ctrl+Alt+Shift
+      term.attachCustomKeyEventHandler(function(ev) {
+        if (ev.type !== 'keydown') return true;
+        var code = ev.key.length === 1 ? ev.key.charCodeAt(0) : null;
+        if (!code) return true;
+        var mod = 1 + (ev.shiftKey ? 1 : 0) + (ev.altKey ? 2 : 0) + (ev.ctrlKey ? 4 : 0);
+        if (mod > 1) {
+          // Send CSI u sequence and suppress default browser handling
+          term.input('\x1b[' + code + ';' + mod + 'u');
+          return false;
+        }
+        return true;
+      });
+
       var fitAddon = new FitAddon.FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
