@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Agent Server</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -112,11 +113,74 @@
     .session-activity .label { color: #8b949e; }
     .session-time { font-size: 0.7em; color: #484f58; margin-top: 4px; }
     .no-sessions { font-size: 0.85em; color: #484f58; padding: 12px 0; }
+
+    /* tmux session cards */
+    .tmux-panel { margin-bottom: 20px; }
+    .tmux-panel h2 {
+      font-size: 0.9em; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 8px;
+    }
+    .tmux-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .tmux-card {
+      background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+      border-left: 3px solid #d2a8ff;
+      padding: 10px 14px; cursor: pointer; transition: border-color 0.15s;
+    }
+    .tmux-card:hover { border-color: #d2a8ff; }
+    .tmux-card-name { font-size: 0.85em; color: #d2a8ff; font-weight: 600; }
+    .tmux-card-info { font-size: 0.7em; color: #8b949e; margin-top: 4px; }
+    .tmux-card-attached {
+      display: inline-block; font-size: 0.65em; padding: 1px 6px;
+      border-radius: 10px; margin-left: 6px;
+      background: rgba(126,231,135,0.12); color: #7ee787;
+    }
+
+    /* terminal modal */
+    #terminal-modal {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: #0d1117; flex-direction: column;
+    }
+    #terminal-modal.open { display: flex; }
+    #terminal-titlebar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 16px; background: #161b22; border-bottom: 1px solid #21262d;
+      font-size: 0.85em;
+    }
+    #terminal-title { color: #d2a8ff; font-weight: 600; }
+    #terminal-close {
+      background: none; border: 1px solid #30363d; border-radius: 6px;
+      color: #8b949e; cursor: pointer; padding: 4px 12px; font-family: inherit;
+      font-size: 0.85em;
+    }
+    #terminal-close:hover { border-color: #f85149; color: #f85149; }
+    #terminal-container { flex: 1; overflow: hidden; }
+    #terminal-status {
+      display: none; position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 20px 32px; text-align: center; color: #8b949e;
+    }
+    #terminal-status button {
+      margin-top: 12px; background: #21262d; border: 1px solid #30363d;
+      border-radius: 6px; color: #c9d1d9; cursor: pointer;
+      padding: 6px 16px; font-family: inherit;
+    }
+    #terminal-status button:hover { border-color: #58a6ff; }
   </style>
 </head>
 <body>
+  <div class="tmux-panel">
+    <h2>tmux Sessions</h2>
+    <div id="tmux-sessions" class="tmux-grid">
+      <div class="no-sessions">Loading...</div>
+    </div>
+  </div>
+
   <div class="sessions-panel">
-    <h2>Sessions</h2>
+    <h2>Claude Sessions</h2>
     <div id="sessions" class="sessions-grid">
       <div class="no-sessions">Waiting for data...</div>
     </div>
@@ -129,12 +193,159 @@
     <select id="filter-cwd"><option value="">All Directories</option></select>
   </div>
   <div class="event-list" id="events"></div>
+  <div id="terminal-modal">
+    <div id="terminal-titlebar">
+      <span id="terminal-title"></span>
+      <button id="terminal-close" onclick="closeTerminal()">Close</button>
+    </div>
+    <div id="terminal-container"></div>
+    <div id="terminal-status">
+      <div id="terminal-status-text"></div>
+      <button onclick="reconnectTerminal()">Reconnect</button>
+    </div>
+  </div>
+
   <div class="status-bar">
     <span><span class="live-dot"></span>Polling every 2s</span>
     <span id="last-update"></span>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script>
+    // --- Terminal state ---
+    var currentTerminal = null;
+    var currentWs = null;
+    var currentFitAddon = null;
+    var currentSessionName = null;
+    var resizeTimeout = null;
+
+    function openTerminal(sessionName) {
+      currentSessionName = sessionName;
+      var modal = document.getElementById('terminal-modal');
+      var container = document.getElementById('terminal-container');
+      var status = document.getElementById('terminal-status');
+      modal.classList.add('open');
+      document.getElementById('terminal-title').textContent = 'tmux: ' + sessionName;
+      status.style.display = 'none';
+      document.body.style.overflow = 'hidden';
+
+      container.innerHTML = '';
+      var term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
+        theme: {
+          background: '#0d1117',
+          foreground: '#c9d1d9',
+          cursor: '#58a6ff',
+          selectionBackground: 'rgba(88,166,255,0.3)',
+          black: '#484f58', red: '#f85149', green: '#7ee787', yellow: '#d29922',
+          blue: '#58a6ff', magenta: '#d2a8ff', cyan: '#39d353', white: '#c9d1d9',
+          brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+          brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+          brightCyan: '#56d364', brightWhite: '#f0f6fc',
+        }
+      });
+
+      var fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(container);
+      fitAddon.fit();
+
+      var cols = term.cols;
+      var rows = term.rows;
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var basePath = location.pathname.replace(/\/+$/, '');
+      var ws = new WebSocket(proto + '//' + location.host + basePath + '/terminal?session=' + encodeURIComponent(sessionName) + '&cols=' + cols + '&rows=' + rows);
+
+      ws.onopen = function() {
+        term.focus();
+      };
+
+      ws.onmessage = function(ev) {
+        term.write(ev.data);
+      };
+
+      ws.onclose = function() {
+        document.getElementById('terminal-status-text').textContent = 'Disconnected from ' + sessionName;
+        status.style.display = 'block';
+      };
+
+      ws.onerror = function() {
+        document.getElementById('terminal-status-text').textContent = 'Connection error';
+        status.style.display = 'block';
+      };
+
+      term.onData(function(data) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+
+      currentTerminal = term;
+      currentWs = ws;
+      currentFitAddon = fitAddon;
+
+      window.addEventListener('resize', handleTerminalResize);
+    }
+
+    function handleTerminalResize() {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(function() {
+        if (currentFitAddon && currentTerminal) {
+          currentFitAddon.fit();
+          if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+            currentWs.send(JSON.stringify({
+              type: 'resize',
+              cols: currentTerminal.cols,
+              rows: currentTerminal.rows
+            }));
+          }
+        }
+      }, 100);
+    }
+
+    function closeTerminal() {
+      window.removeEventListener('resize', handleTerminalResize);
+      if (currentWs) { currentWs.close(); currentWs = null; }
+      if (currentTerminal) { currentTerminal.dispose(); currentTerminal = null; }
+      currentFitAddon = null;
+      document.getElementById('terminal-modal').classList.remove('open');
+      document.getElementById('terminal-container').innerHTML = '';
+      document.getElementById('terminal-status').style.display = 'none';
+      document.body.style.overflow = '';
+    }
+
+    function reconnectTerminal() {
+      if (currentSessionName) {
+        closeTerminal();
+        openTerminal(currentSessionName);
+      }
+    }
+
+    // --- tmux sessions ---
+    var tmuxSessions = [];
+
+    function renderTmuxSessions() {
+      var container = document.getElementById('tmux-sessions');
+      if (tmuxSessions.length === 0) {
+        container.innerHTML = '<div class="no-sessions">No tmux sessions found.</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < tmuxSessions.length; i++) {
+        var s = tmuxSessions[i];
+        html += '<div class="tmux-card" onclick="openTerminal(\'' + esc(s.name) + '\')">'
+          + '<span class="tmux-card-name">' + esc(s.name) + '</span>'
+          + (s.attached ? '<span class="tmux-card-attached">attached</span>' : '')
+          + '<div class="tmux-card-info">' + s.windows + ' window' + (s.windows !== 1 ? 's' : '') + '</div>'
+          + '</div>';
+      }
+      container.innerHTML = html;
+    }
+
+    // --- Event viewer state ---
     var allEvents = [];
     var meta = { sessions: [], cwds: [], events: [] };
     var expandedKeys = new Set();
@@ -368,10 +579,12 @@
     function poll() {
       Promise.all([
         fetch('api/events?limit=1000').then(function(r) { return r.json(); }),
-        fetch('api/meta').then(function(r) { return r.json(); })
+        fetch('api/meta').then(function(r) { return r.json(); }),
+        fetch('api/tmux-sessions').then(function(r) { return r.json(); })
       ]).then(function(results) {
         allEvents = results[0];
         meta = results[1];
+        tmuxSessions = results[2];
         sessionCwdMap = {};
         for (var i = 0; i < allEvents.length; i++) {
           var e = allEvents[i];
@@ -380,6 +593,7 @@
           }
         }
         updateFilters();
+        renderTmuxSessions();
         renderSessions();
         renderEvents();
         document.getElementById('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();

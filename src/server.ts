@@ -4,9 +4,11 @@ import { Effect, Layer } from "effect"
 import { createServer } from "node:http"
 import { readFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
+import { execSync } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { RecordedEvent } from "./types.js"
+import { setupTerminalWebSocket } from "./terminal.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const indexHtml = readFileSync(resolve(__dirname, "../public/index.html"), "utf-8")
@@ -48,6 +50,27 @@ const readMeta = (): Promise<{ sessions: string[]; cwds: string[]; events: strin
     }
   }).catch(() => ({ sessions: [], cwds: [], events: [] }))
 
+interface TmuxSession {
+  name: string
+  windows: number
+  attached: boolean
+}
+
+const listTmuxSessions = (): TmuxSession[] => {
+  try {
+    const out = execSync(
+      'tmux list-sessions -F "#{session_name}\t#{session_windows}\t#{session_attached}"',
+      { encoding: "utf-8" }
+    )
+    return out.trim().split("\n").filter(Boolean).map(line => {
+      const [name, windows, attached] = line.split("\t")
+      return { name, windows: parseInt(windows ?? "0"), attached: attached === "1" }
+    })
+  } catch {
+    return []
+  }
+}
+
 const router = HttpRouter.empty.pipe(
   HttpRouter.get("/", Effect.gen(function* () {
     return HttpServerResponse.text(indexHtml, { contentType: "text/html; charset=utf-8" })
@@ -62,7 +85,15 @@ const router = HttpRouter.empty.pipe(
     const meta = yield* Effect.promise(() => readMeta())
     return yield* HttpServerResponse.json(meta)
   }))
+).pipe(
+  HttpRouter.get("/api/tmux-sessions", Effect.gen(function* () {
+    const sessions = listTmuxSessions()
+    return yield* HttpServerResponse.json(sessions)
+  }))
 )
+
+const WS_PORT = 3457
+setupTerminalWebSocket(WS_PORT)
 
 const HttpLive = router.pipe(
   HttpServer.serve(HttpMiddleware.logger),
