@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Server</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      background: #0d1117; color: #c9d1d9;
+      padding: 20px 20px 40px;
+    }
+    h1 {
+      font-size: 1.2em; color: #58a6ff;
+      margin-bottom: 16px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    h1 .count { font-size: 0.8em; color: #8b949e; font-weight: normal; }
+    .filters {
+      display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .filters select {
+      background: #161b22; color: #c9d1d9;
+      border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-family: inherit; font-size: 0.85em;
+    }
+    .filters select:focus { border-color: #58a6ff; outline: none; }
+    .event-list { display: flex; flex-direction: column; gap: 2px; }
+    .event {
+      background: #161b22; border: 1px solid #21262d;
+      border-radius: 6px; padding: 8px 12px;
+      cursor: pointer; transition: border-color 0.15s;
+    }
+    .event:hover { border-color: #30363d; }
+    .event-header {
+      display: flex; gap: 12px; align-items: center;
+      font-size: 0.85em;
+    }
+    .event-time { color: #8b949e; min-width: 70px; }
+    .event-type {
+      font-weight: 600; min-width: 150px;
+      padding: 2px 6px; border-radius: 3px;
+    }
+    .event-cwd { color: #7ee787; font-size: 0.8em; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-summary { color: #c9d1d9; margin-left: auto; font-size: 0.8em; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-session { color: #8b949e; font-size: 0.75em; }
+    .event-detail {
+      display: none; margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid #21262d;
+    }
+    .event-detail pre {
+      font-size: 0.78em; color: #8b949e;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .event.expanded .event-detail { display: block; }
+    .type-session { color: #58a6ff; background: rgba(88,166,255,0.08); }
+    .type-tool { color: #7ee787; background: rgba(126,231,135,0.08); }
+    .type-permission { color: #d29922; background: rgba(210,153,34,0.08); }
+    .type-error { color: #f85149; background: rgba(248,81,73,0.08); }
+    .type-other { color: #8b949e; background: rgba(139,148,158,0.08); }
+    .status-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #161b22; border-top: 1px solid #21262d;
+      padding: 4px 20px; font-size: 0.75em; color: #8b949e;
+      display: flex; justify-content: space-between;
+    }
+    .live-dot {
+      display: inline-block; width: 6px; height: 6px;
+      background: #7ee787; border-radius: 50%;
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .empty { text-align: center; color: #8b949e; padding: 40px; font-size: 0.9em; }
+
+    /* Active sessions panel */
+    .sessions-panel { margin-bottom: 20px; }
+    .sessions-panel h2 {
+      font-size: 0.9em; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 8px;
+    }
+    .sessions-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 8px;
+    }
+    .session-card {
+      background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+      padding: 10px 14px; cursor: pointer; transition: border-color 0.15s;
+    }
+    .session-card:hover { border-color: #30363d; }
+    .session-card.working { border-left: 3px solid #7ee787; }
+    .session-card.idle { border-left: 3px solid #58a6ff; }
+    .session-card.dead { border-left: 3px solid #484f58; opacity: 0.6; }
+    .session-top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .session-id { font-size: 0.8em; color: #58a6ff; font-weight: 600; }
+    .session-status {
+      font-size: 0.7em; padding: 2px 8px; border-radius: 10px;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .session-status.working { background: rgba(126,231,135,0.12); color: #7ee787; }
+    .session-status.idle { background: rgba(88,166,255,0.12); color: #58a6ff; }
+    .session-status.dead { background: rgba(139,148,158,0.12); color: #8b949e; }
+    .session-cwd-line { font-size: 0.75em; color: #7ee787; margin-bottom: 4px; }
+    .session-activity {
+      font-size: 0.78em; color: #c9d1d9;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .session-activity .label { color: #8b949e; }
+    .session-time { font-size: 0.7em; color: #484f58; margin-top: 4px; }
+    .no-sessions { font-size: 0.85em; color: #484f58; padding: 12px 0; }
+  </style>
+</head>
+<body>
+  <div class="sessions-panel">
+    <h2>Sessions</h2>
+    <div id="sessions" class="sessions-grid">
+      <div class="no-sessions">Waiting for data...</div>
+    </div>
+  </div>
+
+  <h1>Hook Events <span class="count" id="count"></span></h1>
+  <div class="filters">
+    <select id="filter-event"><option value="">All Events</option></select>
+    <select id="filter-session"><option value="">All Sessions</option></select>
+    <select id="filter-cwd"><option value="">All Directories</option></select>
+  </div>
+  <div class="event-list" id="events"></div>
+  <div class="status-bar">
+    <span><span class="live-dot"></span>Polling every 2s</span>
+    <span id="last-update"></span>
+  </div>
+
+  <script>
+    var allEvents = [];
+    var meta = { sessions: [], cwds: [], events: [] };
+    var expandedKeys = new Set();
+    var sessionCwdMap = {};
+
+    var EVENT_COLORS = {
+      SessionStart: 'session', SessionEnd: 'session',
+      UserPromptSubmit: 'session', Stop: 'session',
+      PreToolUse: 'tool', PostToolUse: 'tool',
+      SubagentStart: 'tool', SubagentStop: 'tool',
+      PostToolUseFailure: 'error', StopFailure: 'error',
+      PermissionRequest: 'permission', PermissionDenied: 'permission',
+      Notification: 'other', TaskCreated: 'other', TaskCompleted: 'other',
+      PreCompact: 'other', PostCompact: 'other',
+      ConfigChange: 'other', CwdChanged: 'other',
+      FileChanged: 'other', WorktreeCreate: 'other', WorktreeRemove: 'other',
+      InstructionsLoaded: 'other', TeammateIdle: 'other',
+      Elicitation: 'other', ElicitationResult: 'other'
+    };
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function timeAgo(iso) {
+      if (!iso) return '?';
+      var diff = (Date.now() - new Date(iso).getTime()) / 1000;
+      if (diff < 5) return 'just now';
+      if (diff < 60) return Math.floor(diff) + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function getSummary(ev) {
+      if (ev.tool_name) {
+        var input = ev.tool_input || {};
+        if (input.command) return ev.tool_name + ': ' + String(input.command).slice(0, 80);
+        if (input.file_path) return ev.tool_name + ': ' + input.file_path;
+        if (input.pattern) return ev.tool_name + ': ' + input.pattern;
+        if (input.query) return ev.tool_name + ': ' + input.query;
+        if (input.url) return ev.tool_name + ': ' + input.url;
+        return ev.tool_name;
+      }
+      if (ev.prompt) return String(ev.prompt).slice(0, 80);
+      if (ev.source) return ev.source;
+      if (ev.notification_type) return ev.notification_type;
+      return '';
+    }
+
+    function shortPath(p) {
+      if (!p) return '';
+      var parts = p.split('/');
+      return parts.slice(-2).join('/');
+    }
+
+    function toggleEvent(el) {
+      var key = el.getAttribute('data-key');
+      if (expandedKeys.has(key)) {
+        expandedKeys.delete(key);
+        el.classList.remove('expanded');
+      } else {
+        expandedKeys.add(key);
+        el.classList.add('expanded');
+      }
+    }
+
+    function getSessionSummaries() {
+      var sessions = {};
+      for (var i = 0; i < allEvents.length; i++) {
+        var ev = allEvents[i];
+        var sid = ev.session_id;
+        if (!sid) continue;
+        if (!sessions[sid]) {
+          sessions[sid] = {
+            id: sid,
+            cwd: ev.cwd,
+            started: null,
+            ended: false,
+            lastEvent: ev,
+            lastActivity: null
+          };
+        }
+        var s = sessions[sid];
+        // always update last event (events are chronological)
+        s.lastEvent = ev;
+        if (ev.hook_event_name === 'SessionStart') s.started = ev.recorded_at;
+        if (ev.hook_event_name === 'SessionEnd') s.ended = true;
+        if (!s.cwd && ev.cwd) s.cwd = ev.cwd;
+        // track meaningful activity
+        if (ev.tool_name || ev.hook_event_name === 'UserPromptSubmit') {
+          s.lastActivity = ev;
+        }
+      }
+      var STATUS_ORDER = { working: 0, idle: 1, dead: 2 };
+      var list = Object.keys(sessions).map(function(k) { return sessions[k]; });
+      list.sort(function(a, b) {
+        var oa = STATUS_ORDER[getSessionStatus(a)], ob = STATUS_ORDER[getSessionStatus(b)];
+        if (oa !== ob) return oa - ob;
+        return (b.lastEvent.recorded_at || '').localeCompare(a.lastEvent.recorded_at || '');
+      });
+      return list;
+    }
+
+    var IDLE_EVENTS = { Stop: 1, SessionStart: 1 };
+    var IDLE_NOTIFICATIONS = { idle_prompt: 1, permission_prompt: 1 };
+
+    function getSessionStatus(session) {
+      if (session.ended) return 'dead';
+      var last = session.lastEvent;
+      if (!last) return 'idle';
+      var name = last.hook_event_name;
+      if (IDLE_EVENTS[name]) return 'idle';
+      if (name === 'Notification' && IDLE_NOTIFICATIONS[last.notification_type]) return 'idle';
+      if (name === 'PermissionRequest') return 'idle';
+      return 'working';
+    }
+
+    function getActivityText(session) {
+      var last = session.lastEvent;
+      if (!last) return '';
+      var name = last.hook_event_name;
+      if (session.ended) return 'Session ended';
+      if (name === 'Stop') return 'Awaiting prompt';
+      if (name === 'Notification' && last.notification_type === 'idle_prompt') return 'Awaiting prompt';
+      if (name === 'Notification' && last.notification_type === 'permission_prompt') return 'Waiting for permission';
+      if (name === 'PermissionRequest') return 'Waiting for permission — ' + (last.tool_name || '');
+      if (name === 'UserPromptSubmit') return 'Processing prompt';
+      if (name === 'PreToolUse') return 'Running ' + (last.tool_name || 'tool') + '...';
+      if (name === 'PostToolUse') return 'Completed ' + (last.tool_name || 'tool');
+      if (name === 'PostToolUseFailure') return 'Failed: ' + (last.tool_name || 'tool');
+      if (name === 'SubagentStart') return 'Spawned subagent: ' + (last.agent_type || '');
+      if (name === 'SubagentStop') return 'Subagent finished: ' + (last.agent_type || '');
+      if (name === 'PreCompact' || name === 'PostCompact') return 'Compacting context';
+      if (name === 'StopFailure') return 'Error: ' + (last.error_type || 'unknown');
+      return name;
+    }
+
+    function renderSessions() {
+      var summaries = getSessionSummaries();
+      var container = document.getElementById('sessions');
+
+      if (summaries.length === 0) {
+        container.innerHTML = '<div class="no-sessions">No sessions recorded yet.</div>';
+        return;
+      }
+
+      var html = '';
+      for (var i = 0; i < summaries.length; i++) {
+        var s = summaries[i];
+        var statusClass = getSessionStatus(s);
+        var statusLabel = statusClass.charAt(0).toUpperCase() + statusClass.slice(1);
+        var activity = getActivityText(s);
+        var ago = timeAgo(s.lastEvent.recorded_at);
+
+        html += '<div class="session-card ' + statusClass + '" onclick="document.getElementById(\'filter-session\').value=\'' + esc(s.id) + '\';renderEvents()">'
+          + '<div class="session-top">'
+          + '<span class="session-id">' + esc(s.id.slice(0, 8)) + '</span>'
+          + '<span class="session-status ' + statusClass + '">' + statusLabel + '</span>'
+          + '</div>'
+          + (s.cwd ? '<div class="session-cwd-line">' + esc(shortPath(s.cwd)) + '</div>' : '')
+          + (activity ? '<div class="session-activity"><span class="label">Activity: </span>' + esc(activity) + '</div>' : '')
+          + '<div class="session-time">Last event ' + esc(ago) + '</div>'
+          + '</div>';
+      }
+      container.innerHTML = html;
+    }
+
+    function renderEvents() {
+      var sessionF = document.getElementById('filter-session').value;
+      var cwdF = document.getElementById('filter-cwd').value;
+      var eventF = document.getElementById('filter-event').value;
+
+      var filtered = allEvents;
+      if (sessionF) filtered = filtered.filter(function(e) { return e.session_id === sessionF; });
+      if (cwdF) filtered = filtered.filter(function(e) { return e.cwd === cwdF; });
+      if (eventF) filtered = filtered.filter(function(e) { return e.hook_event_name === eventF; });
+
+      document.getElementById('count').textContent = filtered.length + ' of ' + allEvents.length;
+
+      if (filtered.length === 0) {
+        document.getElementById('events').innerHTML = '<div class="empty">No events yet. Hook activity will appear here.</div>';
+        return;
+      }
+
+      var reversed = filtered.slice().reverse();
+      var html = '';
+      for (var i = 0; i < reversed.length; i++) {
+        var ev = reversed[i];
+        var key = ev.recorded_at + ':' + ev.hook_event_name + ':' + (ev.tool_use_id || ev.session_id || i);
+        var typeClass = 'type-' + (EVENT_COLORS[ev.hook_event_name] || 'other');
+        var isExpanded = expandedKeys.has(key);
+        html += '<div class="event' + (isExpanded ? ' expanded' : '') + '" data-key="' + esc(key) + '" onclick="toggleEvent(this)">'
+          + '<div class="event-header">'
+          + '<span class="event-time">' + esc(timeAgo(ev.recorded_at)) + '</span>'
+          + '<span class="event-type ' + typeClass + '">' + esc(ev.hook_event_name) + '</span>'
+          + '<span class="event-cwd" title="' + esc(ev.cwd) + '">' + esc(shortPath(ev.cwd)) + '</span>'
+          + '<span class="event-summary" title="' + esc(getSummary(ev)) + '">' + esc(getSummary(ev)) + '</span>'
+          + '<span class="event-session" title="' + esc(ev.session_id) + '">' + esc(String(ev.session_id || '').slice(0, 8)) + (sessionCwdMap[ev.session_id] ? ' — ' + esc(shortPath(sessionCwdMap[ev.session_id])) : '') + '</span>'
+          + '</div>'
+          + '<div class="event-detail"><pre>' + esc(JSON.stringify(ev, null, 2)) + '</pre></div>'
+          + '</div>';
+      }
+      document.getElementById('events').innerHTML = html;
+    }
+
+    function updateFilters() {
+      updateSelect('filter-event', meta.events);
+      updateSelect('filter-session', meta.sessions, function(sid) {
+        var dir = sessionCwdMap[sid];
+        return sid.slice(0, 8) + (dir ? ' — ' + shortPath(dir) : '');
+      });
+      updateSelect('filter-cwd', meta.cwds);
+    }
+
+    function updateSelect(id, values, labelFn) {
+      var el = document.getElementById(id);
+      var selected = el.value;
+      var firstLabel = el.options[0].text;
+      var opts = '<option value="">' + esc(firstLabel) + '</option>';
+      for (var i = 0; i < values.length; i++) {
+        var v = values[i];
+        var label = labelFn ? labelFn(v) : v;
+        opts += '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+      }
+      el.innerHTML = opts;
+    }
+
+    function poll() {
+      Promise.all([
+        fetch('api/events?limit=1000').then(function(r) { return r.json(); }),
+        fetch('api/meta').then(function(r) { return r.json(); })
+      ]).then(function(results) {
+        allEvents = results[0];
+        meta = results[1];
+        sessionCwdMap = {};
+        for (var i = 0; i < allEvents.length; i++) {
+          var e = allEvents[i];
+          if (e.session_id && e.cwd && !sessionCwdMap[e.session_id]) {
+            sessionCwdMap[e.session_id] = e.cwd;
+          }
+        }
+        updateFilters();
+        renderSessions();
+        renderEvents();
+        document.getElementById('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      }).catch(function(e) {
+        document.getElementById('last-update').textContent = 'Error: ' + e.message;
+      });
+    }
+
+    document.getElementById('filter-session').onchange = renderEvents;
+    document.getElementById('filter-cwd').onchange = renderEvents;
+    document.getElementById('filter-event').onchange = renderEvents;
+
+    poll();
+    setInterval(poll, 2000);
+  </script>
+</body>
+</html>
